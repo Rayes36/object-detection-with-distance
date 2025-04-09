@@ -1,0 +1,4 @@
+rename the video that will be processed to "video"
+
+for the output, rename the outputted video to something else other than "processed_output"
+or it will be overwritten when another operation begins

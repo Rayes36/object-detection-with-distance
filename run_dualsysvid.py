@@ -36,11 +36,12 @@ if __name__ == '__main__':
     min_area = 5000             # Minimum area for contours to be considered valid
 
     # YOLO resolution configs
-    yolo_resolution = 'default'   # Resolution for YOLO model, separated from depth anything , can be set to "default" for original resolution
+    yolo_resolution = 'default'   # Video resolution for the YOLO model to process, separated from the resolution that depth anything takes and can be set to "default" for original video resolution
+    maximum_distance_detection = 10  # Maximum distance (in meters) for YOLO to detect objects in the valid_classes list
 
     # depth anything input/resolution configuration parameters
-    depth_input_size = 336      # Input size for depth estimation (smaller = faster = less accurate, but doesn't matter too much), default is 518, other options are 448, 392, 336, 280, 224, 168, 112, 56
-    input_resolution = 'default'  # Input resolution for webcam capture width x height, can be set to "default" for original resolution
+    depth_input_size = 336      # Input size for depth estimation (smaller = faster = less accurate), default is 518, other options are 448, 392, 336, 280, 224, 168, 112, 56
+    input_resolution = 'default'  # Input resolution for depth anything, width x height and can be set to "default" for original resolution
     
     # Classes to detect
     valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
@@ -164,9 +165,6 @@ if __name__ == '__main__':
                         # Resize mask to match the frame dimensions
                         resized_mask = cv2.resize(binary_mask, (raw_frame.shape[1], raw_frame.shape[0]), interpolation=cv2.INTER_NEAREST)
                         
-                        # Add this detection to the YOLO mask (to avoid duplicate contour detections)
-                        yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
-                        
                         # Isolate depth values for the segmented object
                         masked_depth = original_depth.copy()
                         masked_depth[resized_mask == 0] = np.nan
@@ -175,6 +173,13 @@ if __name__ == '__main__':
                         if len(valid_depth_values) > 0:
                             # Compute the median depth as the object's distance
                             object_depth = np.nanmedian(valid_depth_values)
+                            
+                            # Skip objects beyond the maximum detection distance
+                            if object_depth > maximum_distance_detection:
+                                continue
+                                
+                            # Add this detection to the YOLO mask (to avoid duplicate contour detections)
+                            yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                             
                             # Save detection details for later visualization
                             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
