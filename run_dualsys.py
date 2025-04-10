@@ -23,8 +23,8 @@ if __name__ == '__main__':
     }
     # depth anything model configs
     encoder = 'vits'            # 'vits' (small), 'vitb' (base), vitl (large)
-    dataset = 'hypersim'        # 'hypersim' for indoor model, 'vkitti' for outdoor model
-    max_depth = 20              # 20 for indoor model, 80 for outdoor model
+    dataset = 'vkitti'        # 'hypersim' for indoor model, 'vkitti' for outdoor model
+    max_depth = 80              # 20 for indoor model, 80 for outdoor model
 
     # contours configs
     depth_threshold = 5.0       # Depth threshold for nearby objects (in meters) / (perlu di test buat diluar plg bagus brp meter)
@@ -41,6 +41,9 @@ if __name__ == '__main__':
 
     # Classes to detect
     valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
+
+    # Define quadrants for vertical segments. ex: 20 quadrants, each quadrant occupy 5% of screen width
+    num_quadrants = 20
 
     # Open webcam
     cap = cv2.VideoCapture(0)
@@ -90,6 +93,14 @@ if __name__ == '__main__':
     yolo_model = YOLO("yolo11n-seg.pt")
     
     cmap = matplotlib.colormaps.get_cmap('Spectral_r')
+    
+    # Function to determine quadrant number based on x-coordinate
+    def get_quadrant(x_coord, frame_width):
+        quadrant_width = frame_width / num_quadrants
+        for i in range(num_quadrants):
+            if x_coord >= i * quadrant_width and x_coord < (i + 1) * quadrant_width:
+                return i + 1  # +1 to make it 1-indexed instead of 0-indexed
+        return num_quadrants  # Default to last quadrant if outside bounds
     
     while cap.isOpened():
         ret, raw_frame = cap.read()
@@ -182,6 +193,9 @@ if __name__ == '__main__':
                                 center_x = (x1 + x2) // 2
                                 center_y = (y1 + y2) // 2
                                 
+                            # Determine quadrant for this detection
+                            quadrant = get_quadrant(center_x, raw_frame.shape[1])
+                                
                             yolo_detections.append({
                                 'type': 'yolo',
                                 'class': class_name,
@@ -189,7 +203,8 @@ if __name__ == '__main__':
                                 'bbox': (x1, y1, x2, y2),
                                 'center': (center_x, center_y),
                                 'depth': object_depth,
-                                'color': (0, 255, 0)  # Green for YOLO detections
+                                'color': (0, 255, 0),  # Green for YOLO detections
+                                'quadrant': quadrant
                             })
         
         # Apply morphological operations to refine the YOLO mask
@@ -238,22 +253,32 @@ if __name__ == '__main__':
                     # Compute median depth as the object's distance
                     object_depth = np.nanmedian(valid_depth_values)
                     
-                    # Find the contour point that's closest to the center of the screen
-                    min_distance = float('inf')
-                    closest_point = None
+                    # Check if the center of the screen is inside the contour
+                    center_inside_contour = cv2.pointPolygonTest(contour, screen_center, False) >= 0
                     
-                    # Flatten the contour to get individual points
-                    contour_points = contour.reshape(-1, 2)
+                    if center_inside_contour:
+                        # If center is inside contour, use the screen center
+                        center_x, center_y = screen_center
+                    else:
+                        # Otherwise find the contour point that's closest to the center of the screen
+                        min_distance = float('inf')
+                        closest_point = None
+                        
+                        # Flatten the contour to get individual points
+                        contour_points = contour.reshape(-1, 2)
+                        
+                        for point in contour_points:
+                            # Calculate Euclidean distance to screen center
+                            dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
+                            if dist < min_distance:
+                                min_distance = dist
+                                closest_point = point
+                        
+                        # Use the closest point as the center for visualization
+                        center_x, center_y = closest_point
                     
-                    for point in contour_points:
-                        # Calculate Euclidean distance to screen center
-                        dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
-                        if dist < min_distance:
-                            min_distance = dist
-                            closest_point = point
-                    
-                    # Use the closest point as the center for visualization
-                    center_x, center_y = closest_point
+                    # Determine quadrant for this detection
+                    quadrant = get_quadrant(center_x, raw_frame.shape[1])
                     
                     contour_detections.append({
                         'type': 'contour',
@@ -262,8 +287,21 @@ if __name__ == '__main__':
                         'center': (center_x, center_y),
                         'depth': object_depth,
                         'color': (255, 0, 0),  # Blue for contour detections
-                        'id': i+1
+                        'id': i+1,
+                        'quadrant': quadrant
                     })
+        
+        # Draw quadrant lines (optional, for visualization)
+        quadrant_display = output_frame.copy()
+        quadrant_width = raw_frame.shape[1] / num_quadrants
+        for i in range(1, num_quadrants):
+            x_pos = int(i * quadrant_width)
+            cv2.line(quadrant_display, (x_pos, 0), (x_pos, raw_frame.shape[0]), (100, 100, 100), 1)
+            cv2.putText(quadrant_display, str(i), (x_pos - 10, 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Show the quadrant display for debugging
+        cv2.imshow('Quadrants', quadrant_display)
         
         # 3. VISUALIZATION: Draw all detections on the output frame
         
@@ -279,11 +317,13 @@ if __name__ == '__main__':
             x1, y1, x2, y2 = detection['bbox']
             cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection['color'], 2)
             
-            # Annotate with object ID and distance
+            # Annotate with object ID, quadrant and distance
             cx, cy = detection['center']
+            q_num = detection['quadrant']
+            
             cv2.circle(output_frame, (cx, cy), 5, (0, 0, 255), -1)
             cv2.circle(depth_display, (cx, cy), 5, (0, 0, 255), -1)
-            cv2.putText(output_frame, f"Object {detection['id']}", (x1, y1 - 10),
+            cv2.putText(output_frame, f"Object {detection['id']} (Q{q_num})", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection['color'], 2)
             cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                         (cx + 5, cy - 5),
@@ -301,11 +341,13 @@ if __name__ == '__main__':
             x1, y1, x2, y2 = detection['bbox']
             cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection['color'], 2)
             
-            # Annotate with class name and distance
+            # Annotate with class name, quadrant and distance
             cx, cy = detection['center']
+            q_num = detection['quadrant']
+            
             cv2.circle(output_frame, (cx, cy), 5, (0, 0, 255), -1)
             cv2.circle(depth_display, (cx, cy), 5, (0, 0, 255), -1)
-            cv2.putText(output_frame, f"{detection['class']}", (x1, y1 - 10),
+            cv2.putText(output_frame, f"{detection['class']} (Q{q_num})", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection['color'], 2)
             cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                         (cx + 5, cy - 5),
