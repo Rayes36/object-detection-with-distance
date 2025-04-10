@@ -36,15 +36,18 @@ if __name__ == '__main__':
     min_area = 5000             # Minimum area for contours to be considered valid
 
     # YOLO resolution configs
-    yolo_resolution = 'default'   # Video resolution for the YOLO model to process, separated from the resolution that depth anything takes and can be set to "default" for original video resolution
+    yolo_resolution = 'default'   # Resolution for YOLO model, separated from depth anything , can be set to "default" for original resolution
     maximum_distance_detection = 10  # Maximum distance (in meters) for YOLO to detect objects in the valid_classes list
 
     # depth anything input/resolution configuration parameters
-    depth_input_size = 336      # Input size for depth estimation (smaller = faster = less accurate), default is 518, other options are 448, 392, 336, 280, 224, 168, 112, 56
-    input_resolution = 'default'  # Input resolution for depth anything, width x height and can be set to "default" for original resolution
+    depth_input_size = 336      # Input size for depth estimation (smaller = faster = less accurate, but doesn't matter too much), default is 518, other options are 448, 392, 336, 280, 224, 168, 112, 56
+    input_resolution = 'default'  # Input resolution for webcam capture width x height, can be set to "default" for original resolution
     
     # Classes to detect
     valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
+
+    # Define quadrants for vertical segments. ex: 20 quadrants, each quadrant occupy 5% of screen width
+    num_quadrants = 20
 
     # Open input video to get original dimensions
     input_path = os.path.join('input', 'video.mp4')
@@ -95,6 +98,14 @@ if __name__ == '__main__':
 
     cmap = matplotlib.colormaps.get_cmap('Spectral_r')
     
+    # Function to determine quadrant number based on x-coordinate
+    def get_quadrant(x_coord, frame_width):
+        quadrant_width = frame_width / num_quadrants
+        for i in range(num_quadrants):
+            if x_coord >= i * quadrant_width and x_coord < (i + 1) * quadrant_width:
+                return i + 1  # +1 to make it 1-indexed instead of 0-indexed
+        return num_quadrants  # Default to last quadrant if outside bounds
+    
     # Create a progress bar
     pbar = tqdm(total=frame_count, desc="Processing video")
     
@@ -135,6 +146,9 @@ if __name__ == '__main__':
         # Create a mask to track YOLO detections (to avoid duplicate contour detections)
         yolo_mask = np.zeros((raw_frame.shape[0], raw_frame.shape[1]), dtype=np.uint8)
         
+        # Find the center of the screen
+        screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
+        
         # 1. PRIMARY DETECTOR: Run YOLO segmentation on the YOLO-specific frame
         yolo_detections = []
         results = yolo_model(yolo_frame)
@@ -165,6 +179,9 @@ if __name__ == '__main__':
                         # Resize mask to match the frame dimensions
                         resized_mask = cv2.resize(binary_mask, (raw_frame.shape[1], raw_frame.shape[0]), interpolation=cv2.INTER_NEAREST)
                         
+                        # Add this detection to the YOLO mask (to avoid duplicate contour detections)
+                        yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
+                        
                         # Isolate depth values for the segmented object
                         masked_depth = original_depth.copy()
                         masked_depth[resized_mask == 0] = np.nan
@@ -177,9 +194,6 @@ if __name__ == '__main__':
                             # Skip objects beyond the maximum detection distance
                             if object_depth > maximum_distance_detection:
                                 continue
-                                
-                            # Add this detection to the YOLO mask (to avoid duplicate contour detections)
-                            yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                             
                             # Save detection details for later visualization
                             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -190,6 +204,9 @@ if __name__ == '__main__':
                             else:
                                 center_x = (x1 + x2) // 2
                                 center_y = (y1 + y2) // 2
+                            
+                            # Determine quadrant for this detection
+                            quadrant = get_quadrant(center_x, raw_frame.shape[1])
                                 
                             yolo_detections.append({
                                 'type': 'yolo',
@@ -198,7 +215,8 @@ if __name__ == '__main__':
                                 'bbox': (x1, y1, x2, y2),
                                 'center': (center_x, center_y),
                                 'depth': object_depth,
-                                'color': (0, 255, 0)  # Green for YOLO detections
+                                'color': (0, 255, 0),  # Green for YOLO detections
+                                'quadrant': quadrant
                             })
         
         # Apply morphological operations to refine the YOLO mask
@@ -220,9 +238,6 @@ if __name__ == '__main__':
                 
         # Find contours in the exclusive mask
         contours, _ = cv2.findContours(exclusive_depth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-        # Find the center of the screen
-        screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
 
         # Process each contour that meets minimum area requirement
         contour_detections = []
@@ -244,22 +259,32 @@ if __name__ == '__main__':
                     # Compute median depth as the object's distance
                     object_depth = np.nanmedian(valid_depth_values)
                     
-                    # Find the contour point that's closest to the center of the screen
-                    min_distance = float('inf')
-                    closest_point = None
+                    # Check if the center of the screen is inside the contour
+                    center_inside_contour = cv2.pointPolygonTest(contour, screen_center, False) >= 0
                     
-                    # Flatten the contour to get individual points
-                    contour_points = contour.reshape(-1, 2)
+                    if center_inside_contour:
+                        # If center is inside contour, use the screen center
+                        center_x, center_y = screen_center
+                    else:
+                        # Otherwise find the contour point that's closest to the center of the screen
+                        min_distance = float('inf')
+                        closest_point = None
+                        
+                        # Flatten the contour to get individual points
+                        contour_points = contour.reshape(-1, 2)
+                        
+                        for point in contour_points:
+                            # Calculate Euclidean distance to screen center
+                            dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
+                            if dist < min_distance:
+                                min_distance = dist
+                                closest_point = point
+                        
+                        # Use the closest point as the center for visualization
+                        center_x, center_y = closest_point
                     
-                    for point in contour_points:
-                        # Calculate Euclidean distance to screen center
-                        dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
-                        if dist < min_distance:
-                            min_distance = dist
-                            closest_point = point
-                    
-                    # Use the closest point as the center for visualization
-                    center_x, center_y = closest_point
+                    # Determine quadrant for this detection
+                    quadrant = get_quadrant(center_x, raw_frame.shape[1])
                     
                     contour_detections.append({
                         'type': 'contour',
@@ -268,8 +293,18 @@ if __name__ == '__main__':
                         'center': (center_x, center_y),
                         'depth': object_depth,
                         'color': (255, 0, 0),  # Blue for contour detections
-                        'id': i+1
+                        'id': i+1,
+                        'quadrant': quadrant
                     })
+        
+        # Optional: Create a quadrant visualization frame
+        quadrant_display = output_frame.copy()
+        quadrant_width = raw_frame.shape[1] / num_quadrants
+        for i in range(1, num_quadrants):
+            x_pos = int(i * quadrant_width)
+            cv2.line(quadrant_display, (x_pos, 0), (x_pos, raw_frame.shape[0]), (100, 100, 100), 1)
+            cv2.putText(quadrant_display, str(i), (x_pos - 10, 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # 3. VISUALIZATION: Draw all detections on the output frame
         
@@ -285,11 +320,13 @@ if __name__ == '__main__':
             x1, y1, x2, y2 = detection['bbox']
             cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection['color'], 2)
             
-            # Annotate with object ID and distance
+            # Annotate with object ID, quadrant and distance
             cx, cy = detection['center']
+            q_num = detection['quadrant']
+            
             cv2.circle(output_frame, (cx, cy), 5, (0, 0, 255), -1)
             cv2.circle(depth_display, (cx, cy), 5, (0, 0, 255), -1)
-            cv2.putText(output_frame, f"Object {detection['id']}", (x1, y1 - 10),
+            cv2.putText(output_frame, f"Object {detection['id']} (Q{q_num})", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection['color'], 2)
             cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                         (cx + 5, cy - 5),
@@ -307,11 +344,13 @@ if __name__ == '__main__':
             x1, y1, x2, y2 = detection['bbox']
             cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection['color'], 2)
             
-            # Annotate with class name and distance
+            # Annotate with class name, quadrant and distance
             cx, cy = detection['center']
+            q_num = detection['quadrant']
+            
             cv2.circle(output_frame, (cx, cy), 5, (0, 0, 255), -1)
             cv2.circle(depth_display, (cx, cy), 5, (0, 0, 255), -1)
-            cv2.putText(output_frame, f"{detection['class']}", (x1, y1 - 10),
+            cv2.putText(output_frame, f"{detection['class']} (Q{q_num})", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection['color'], 2)
             cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                         (cx + 5, cy - 5),
