@@ -18,8 +18,13 @@ def init_audio_system(sound_config):
     pygame.mixer.init(frequency=sound_config['sample_rate'], size=-16, channels=2)
     pygame.mixer.set_num_channels(8)  # Allocate enough channels for concurrent sounds
     
-    # Generate the different sound samples we'll use
-    sounds = {}
+    # Create a dictionary to store channel assignments
+    channels = {
+        'left_hum': pygame.mixer.Channel(0),
+        'right_hum': pygame.mixer.Channel(1),
+        'person': pygame.mixer.Channel(2),
+        'other': pygame.mixer.Channel(3)
+    }
     
     # Function to generate a sine wave beep
     def generate_beep(frequency, duration_samples):
@@ -52,28 +57,21 @@ def init_audio_system(sound_config):
         # Create pygame Sound object
         return pygame.mixer.Sound(audio_int16)
     
-    sounds['person'] = to_pygame_sound(person_beep)
-    sounds['other'] = to_pygame_sound(other_beep)
-    sounds['hum'] = to_pygame_sound(hum)
+    sounds = {
+        'person': to_pygame_sound(person_beep),
+        'other': to_pygame_sound(other_beep),
+        'hum': to_pygame_sound(hum)
+    }
     
-    return sounds
+    return sounds, channels
 
-def play_audio_for_detections(detections, frame_width, max_dist, sounds, sound_config):
+def play_audio_for_detections(detections, frame_width, max_dist, sounds, channels, sound_config):
     """
-    Play audio cues for the detected objects in real-time
+    Play audio cues for the detected objects in real-time using dedicated channels
     """
-    # Keep track of unique object sounds to prevent too many overlapping sounds
-    person_played = False
-    other_played = False
-    left_hum_played = False
-    right_hum_played = False
-    
-    # Reset audio - stop any previous sounds
-    pygame.mixer.stop()
-    
     # Process environment/contour detections first
-    left_hum_volume = 0.0
-    right_hum_volume = 0.0
+    left_hum_active = False
+    right_hum_active = False
     min_left_depth = float('inf')
     min_right_depth = float('inf')
     
@@ -93,68 +91,112 @@ def play_audio_for_detections(detections, frame_width, max_dist, sounds, sound_c
         volume = 1.0 if min_left_depth <= 5.0 else max(0.0, 1.0 - (min_left_depth - 5.0) / (max_dist - 5.0))
         left_hum_volume = volume * sound_config['hum_max_volume']
         
-        if left_hum_volume > 0.05 and not left_hum_played:  # Threshold to avoid very quiet sounds
-            left_hum = sounds['hum']
-            left_hum.set_volume(left_hum_volume, 0.0)  # Left channel only
-            left_hum.play(loops=0)
-            left_hum_played = True
+        if left_hum_volume > 0.05:  # Threshold to avoid very quiet sounds
+            # Set left channel only
+            channels['left_hum'].set_volume(left_hum_volume, 0.0)
+            # Only play if not already playing
+            if not channels['left_hum'].get_busy():
+                channels['left_hum'].play(sounds['hum'], loops=-1)  # Loop the hum
+            left_hum_active = True
+    
+    # If left hum should not be active but is currently playing, stop it
+    if not left_hum_active and channels['left_hum'].get_busy():
+        channels['left_hum'].fadeout(100)  # Fade out in 100ms instead of abrupt stop
     
     # Play hum for right side if close enough
     if min_right_depth <= max_dist:
         volume = 1.0 if min_right_depth <= 5.0 else max(0.0, 1.0 - (min_right_depth - 5.0) / (max_dist - 5.0))
         right_hum_volume = volume * sound_config['hum_max_volume']
         
-        if right_hum_volume > 0.05 and not right_hum_played:  # Threshold to avoid very quiet sounds
-            right_hum = sounds['hum']
-            right_hum.set_volume(0.0, right_hum_volume)  # Right channel only
-            right_hum.play(loops=0)
-            right_hum_played = True
+        if right_hum_volume > 0.05:  # Threshold to avoid very quiet sounds
+            # Set right channel only
+            channels['right_hum'].set_volume(0.0, right_hum_volume)
+            # Only play if not already playing
+            if not channels['right_hum'].get_busy():
+                channels['right_hum'].play(sounds['hum'], loops=-1)  # Loop the hum
+            right_hum_active = True
+    
+    # If right hum should not be active but is currently playing, stop it
+    if not right_hum_active and channels['right_hum'].get_busy():
+        channels['right_hum'].fadeout(100)  # Fade out in 100ms instead of abrupt stop
+    
+    # Track if we've processed a person or other object in this frame
+    person_detected = False
+    other_detected = False
     
     # Process YOLO detections (persons and other objects)
+    # Find the closest person and closest other object
+    closest_person = {'depth': float('inf'), 'center_x': 0}
+    closest_other = {'depth': float('inf'), 'center_x': 0}
+    
     for det in detections:
         if det['type'] == 'yolo':
             depth = det['depth']
+            if depth > max_dist:
+                continue
+                
             center_x = det['center'][0]
             class_name = det['class']
             
-            # Skip if beyond max distance
-            if depth > max_dist:
-                continue
-            
-            # Determine sound type and settings
-            is_person = (class_name == 'person')
-            sound = sounds['person'] if is_person else sounds['other']
-            max_vol = sound_config['person_beep_max_volume'] if is_person else sound_config['other_beep_max_volume']
-            
-            # Skip if we already played this type of sound in this frame
-            if (is_person and person_played) or (not is_person and other_played):
-                continue
-            
-            # Calculate volume based on distance
-            volume = 1.0 if depth <= 5.0 else max(0.0, 1.0 - (depth - 5.0) / (max_dist - 5.0))
-            volume *= max_vol
-            
-            # Calculate panning (left/right balance)
-            clamped_center_x = max(0, min(frame_width - 1, center_x))
-            pan_right = clamped_center_x / frame_width
-            
-            # Apply constant power panning for better audio experience
-            pan_angle = pan_right * (math.pi / 2)
-            left_vol = volume * math.cos(pan_angle)
-            right_vol = volume * math.sin(pan_angle)
-            
-            # Play the sound
-            sound.set_volume(left_vol, right_vol)
-            sound.play(loops=0)
-            
-            # Mark this type as played
-            if is_person:
-                person_played = True
-            else:
-                other_played = True
+            if class_name == 'person' and depth < closest_person['depth']:
+                closest_person = {'depth': depth, 'center_x': center_x}
+                person_detected = True
+            elif class_name != 'person' and depth < closest_other['depth']:
+                closest_other = {'depth': depth, 'center_x': center_x}
+                other_detected = True
+    
+    # Handle person detection
+    if person_detected:
+        depth = closest_person['depth']
+        center_x = closest_person['center_x']
+        
+        # Calculate volume based on distance
+        volume = 1.0 if depth <= 5.0 else max(0.0, 1.0 - (depth - 5.0) / (max_dist - 5.0))
+        volume *= sound_config['person_beep_max_volume']
+        
+        # Calculate panning (left/right balance)
+        clamped_center_x = max(0, min(frame_width - 1, center_x))
+        pan_right = clamped_center_x / frame_width
+        
+        # Apply constant power panning for better audio experience
+        pan_angle = pan_right * (math.pi / 2)
+        left_vol = volume * math.cos(pan_angle)
+        right_vol = volume * math.sin(pan_angle)
+        
+        # Set the volume
+        channels['person'].set_volume(left_vol, right_vol)
+        
+        # Only play if not already playing
+        if not channels['person'].get_busy():
+            channels['person'].play(sounds['person'])
+    
+    # Handle other object detection
+    if other_detected:
+        depth = closest_other['depth']
+        center_x = closest_other['center_x']
+        
+        # Calculate volume based on distance
+        volume = 1.0 if depth <= 5.0 else max(0.0, 1.0 - (depth - 5.0) / (max_dist - 5.0))
+        volume *= sound_config['other_beep_max_volume']
+        
+        # Calculate panning (left/right balance)
+        clamped_center_x = max(0, min(frame_width - 1, center_x))
+        pan_right = clamped_center_x / frame_width
+        
+        # Apply constant power panning for better audio experience
+        pan_angle = pan_right * (math.pi / 2)
+        left_vol = volume * math.cos(pan_angle)
+        right_vol = volume * math.sin(pan_angle)
+        
+        # Set the volume
+        channels['other'].set_volume(left_vol, right_vol)
+        
+        # Only play if not already playing
+        if not channels['other'].get_busy():
+            channels['other'].play(sounds['other'])
 
 # Function to handle audio processing in a separate thread
-def audio_thread_function(audio_queue, frame_width, max_dist, sounds, sound_config):
+def audio_thread_function(audio_queue, frame_width, max_dist, sounds, channels, sound_config):
     """
     Thread function to process audio feedback in parallel with video processing
     """
@@ -169,7 +211,7 @@ def audio_thread_function(audio_queue, frame_width, max_dist, sounds, sound_conf
             
             # Limit audio updates to avoid overwhelming the audio system
             if current_time - last_audio_time >= min_audio_interval:
-                play_audio_for_detections(detections, frame_width, max_dist, sounds, sound_config)
+                play_audio_for_detections(detections, frame_width, max_dist, sounds, channels, sound_config)
                 last_audio_time = current_time
                 
             # Small sleep to prevent thread from consuming too much CPU
@@ -200,11 +242,11 @@ if __name__ == '__main__':
     }
     # depth anything model configs
     encoder = 'vits'            # 'vits' (small), 'vitb' (base), vitl (large)
-    dataset = 'hypersim'        # 'hypersim' for indoor model, 'vkitti' for outdoor model
-    max_depth = 20              # 20 for indoor model, 80 for outdoor model
+    dataset = 'vkitti'        # 'hypersim' for indoor model, 'vkitti' for outdoor model
+    max_depth = 80              # 20 for indoor model, 80 for outdoor model
 
     # contours configs
-    depth_threshold = 5.0       # Depth threshold for nearby objects (in meters) / (perlu di test buat diluar plg bagus brp meter)
+    depth_threshold = 4       # Depth threshold for nearby objects (in meters) / (perlu di test buat diluar plg bagus brp meter)
     min_area = 5000             # Minimum area for contours to be considered valid
 
     # YOLO resolution configs
@@ -291,7 +333,7 @@ if __name__ == '__main__':
     
     # Initialize the audio system
     print("Initializing audio system...")
-    sounds = init_audio_system(sound_config)
+    sounds, channels = init_audio_system(sound_config)
     
     # Create a shared queue for audio processing
     audio_queue = []
@@ -299,11 +341,12 @@ if __name__ == '__main__':
     # Start audio processing thread
     audio_thread = threading.Thread(
         target=audio_thread_function,
-        args=(audio_queue, input_width, maximum_distance_detection, sounds, sound_config),
+        args=(audio_queue, input_width, maximum_distance_detection, sounds, channels, sound_config),
         daemon=True
     )
     audio_thread.start()
     print("Audio system ready.")
+
     
     while cap.isOpened():
         ret, raw_frame = cap.read()
