@@ -2,18 +2,25 @@ import argparse
 import cv2
 import numpy as np
 import torch
+import os
 import matplotlib
 import pygame
 import time
-import threading
+import wave
+import struct
+import array
+from tqdm import tqdm
 from ultralytics import YOLO
 from depth_anything_v2.dpt import DepthAnythingV2
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Dual Detection System with YOLO and Contour-based Detection')
-    parser.add_argument('--pred-only', action='store_true', help='Only display the depth prediction')
+    parser.add_argument('--pred-only', action='store_true', help='Only include the depth prediction in output')
     parser.add_argument('--grayscale', action='store_true', help='Display depth in grayscale')
     args = parser.parse_args()
+
+    # Create output directory if it doesn't exist
+    os.makedirs('output', exist_ok=True)
 
     # Device selection
     DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
@@ -35,13 +42,12 @@ if __name__ == '__main__':
 
     # YOLO resolution configs
     yolo_resolution = 'default'   # Resolution for YOLO model, separated from depth anything , can be set to "default" for original resolution
-    maximum_distance_detection = 15  # Maximum distance (in meters) for YOLO to detect objects in the valid_classes list
+    maximum_distance_detection = 10  # Maximum distance (in meters) for YOLO to detect objects in the valid_classes list
 
     # depth anything input/resolution configuration parameters
     depth_input_size = 336      # Input size for depth estimation (smaller = faster = less accurate, but doesn't matter too much), default is 518, other options are 448, 392, 336, 280, 224, 168, 112, 56
     input_resolution = 'default'  # Input resolution for webcam capture width x height, can be set to "default" for original resolution
-    # input_resolution = 1920x1080
-
+    
     # Classes to detect
     valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
 
@@ -51,47 +57,32 @@ if __name__ == '__main__':
     # Audio system configs
     audio_enabled = True        # Enable/disable audio feedback
     audio_volume = 0.7          # Master volume (0.0 to 1.0)
-    min_distance_beep = 3       # Distance (in meters) at which beeping interval becomes smallest
+    min_distance_beep = 2       # Distance (in meters) at which beeping interval becomes smallest
     max_beep_interval = 1.0     # Maximum interval between beeps in seconds (at maximum_distance_detection)
-    min_beep_interval = 0.05    # Minimum interval between beeps in seconds (at min_distance_beep)
-    fixed_beep_duration = 0.1   # Fixed beep duration in seconds
-    object_timeout = 1.0        # Time in seconds before an object is considered "lost" if not detected
-    audio_thread_sleep = 0.01   # Sleep time for audio thread (10ms for fine timing control)
+    min_beep_interval = 0.3    # Minimum interval between beeps in seconds (at min_distance_beep)
+    fixed_beep_duration = 0.3   # Fixed beep duration in seconds
     
     # Sound characteristics
     wall_hum_freq = 100         # Frequency for wall/environment humming sound (Hz)
     person_beep_freq = 800      # Frequency for person detection beep (Hz)
     vehicle_beep_freq = 400     # Frequency for vehicle detection beep (Hz)
     
-    # Wall hum specific parameters
-    wall_hum_enabled = True     # Enable/disable continuous wall humming
-    wall_hum_duration = 0.5     # Duration of each wall hum loop (shorter for more responsive panning)
-    wall_hum_volume = 0.4       # Volume multiplier for wall humming (relative to master volume)
-    
     # Audio buffer sizes and channel settings
     buffer_size = 512           # Audio buffer size (smaller = lower latency but higher CPU)
     sample_rate = 44100         # Audio sample rate
-    
-    # Global dictionary to track detected objects between frames
-    tracked_objects = {}
-    tracking_lock = threading.Lock()  # Thread-safe access
-    
-    # Specific tracking for wall/contour objects to manage continuous humming
-    wall_objects = {}
-    wall_lock = threading.Lock()  # Thread-safe access for wall objects
-    
-    # Stop event for audio thread
-    stop_event = threading.Event()
-    
-    # Open webcam
-    cap = cv2.VideoCapture(0)
+
+    # Open input video to get original dimensions
+    input_path = os.path.join('input', 'video.mp4')
+    cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        exit()
+        raise FileNotFoundError(f"Error: Could not open video file {input_path}.")
     
-    # Get original webcam capabilities
+    # Get original video properties
     original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps  # Video duration in seconds
     
     # Parse input resolution
     if input_resolution == 'default':
@@ -101,26 +92,12 @@ if __name__ == '__main__':
     
     # Parse YOLO resolution
     if yolo_resolution == 'default':
-        yolo_width, yolo_height = input_width, input_height  # Use input resolution as YOLO default
+        yolo_width, yolo_height = original_width, original_height
     else:
         yolo_width, yolo_height = map(int, yolo_resolution.split('x'))
-        
-    # Set webcam resolution if not using default
-    if input_resolution != 'default':
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, input_width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, input_height)
     
-    # Get actual resolution after setting (webcams might not support exact requested resolution)
-    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    # Update input dimensions to match actual camera capabilities
-    input_width, input_height = actual_width, actual_height
-    
-    # Print actual resolution
-    print(f"Actual webcam resolution: {input_width}x{input_height}")
-    print(f"Depth model processing size: {depth_input_size}x{depth_input_size}")
-    print(f"YOLO model resolution: {yolo_width}x{yolo_height}")
+    # Reset video capture to start
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     depth_model = DepthAnythingV2(**{**model_configs[encoder], 'max_depth': max_depth})
     depth_model.load_state_dict(torch.load(f'checkpoints/depth_anything_v2_metric_{dataset}_{encoder}.pth', map_location='cpu'))
@@ -130,48 +107,22 @@ if __name__ == '__main__':
     # Load YOLOv11 segmentation model
     yolo_model = YOLO("yolo11n-seg.pt")
     
+    # Prepare output video writer
+    output_path = os.path.join('output', 'processed_output.mp4')
+    
+    # Define the codec and create VideoWriter object
+    # If pred-only, we'll just have the depth map; otherwise, we'll have side-by-side view
+    if args.pred_only:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (input_width, input_height))
+    else:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (input_width*2, input_height))
+
     cmap = matplotlib.colormaps.get_cmap('Spectral_r')
     
-    # Initialize pygame mixer for audio
-    if audio_enabled:
-        pygame.mixer.init(frequency=sample_rate, size=-16, channels=2, buffer=buffer_size)
-        pygame.mixer.set_num_channels(50)  # Allow many simultaneous sounds
-        
-        # Create a separate channel for wall humming
-        wall_hum_channel = pygame.mixer.Channel(0)  # Reserve channel 0 for wall humming
-        
-        # Generate sound samples
-        def generate_sine_wave(freq, duration, volume=1.0):
-            t = np.linspace(0, duration, int(sample_rate * duration), False)
-            wave = np.sin(2 * np.pi * freq * t) * volume
-            # Apply fade in/out to avoid clicks
-            fade_samples = int(0.005 * sample_rate)  # 5ms fade
-            fade_in = np.linspace(0, 1, fade_samples)
-            fade_out = np.linspace(1, 0, fade_samples)
-            if len(wave) > 2 * fade_samples:
-                wave[:fade_samples] *= fade_in
-                wave[-fade_samples:] *= fade_out
-            return wave.astype(np.float32)
-
-        # Create stereo sound with different volumes for left and right channels
-        def create_stereo_sound(freq, duration, left_vol, right_vol):
-            wave = generate_sine_wave(freq, duration)
-            stereo = np.column_stack((wave * left_vol, wave * right_vol)) * 32767
-            sound_buffer = pygame.sndarray.make_sound(stereo.astype(np.int16)).get_raw()
-            return pygame.mixer.Sound(buffer=sound_buffer)
-            
-        # Sound cache for different frequencies
-        sound_cache = {}
-        
-        # Function to get or create a stereo sound
-        def get_stereo_sound(freq, duration, left_vol, right_vol):
-            # Create a unique key for this sound configuration
-            key = f"{freq}_{duration}_{left_vol:.2f}_{right_vol:.2f}"
-            if key not in sound_cache:
-                sound_cache[key] = create_stereo_sound(freq, duration, left_vol, right_vol)
-            return sound_cache[key]
-            
-        print("Audio system initialized")
+    # Initialize audio data collection
+    audio_data = []  # Will store audio events as (timestamp, type, quadrant, distance)
     
     # Function to determine quadrant number based on x-coordinate
     def get_quadrant(x_coord, frame_width):
@@ -181,152 +132,24 @@ if __name__ == '__main__':
                 return i + 1  # +1 to make it 1-indexed instead of 0-indexed
         return num_quadrants  # Default to last quadrant if outside bounds
     
-    # Function to calculate volume ratio based on quadrant
-    def get_stereo_volume(quadrant):
-        # Calculate left and right volume percentages
-        # For quadrant 1: left=100%, right=0%
-        # For quadrant num_quadrants: left=0%, right=100%
-        left_volume = (num_quadrants - quadrant) / (num_quadrants - 1)
-        right_volume = (quadrant - 1) / (num_quadrants - 1)
-        return left_volume, right_volume
+    # Create a progress bar
+    pbar = tqdm(total=frame_count, desc="Processing video")
     
-    # Function to calculate beep interval based on distance
-    def calculate_beep_interval(distance):
-        if distance <= min_distance_beep:
-            return min_beep_interval
-        # Linear scaling from min_beep_interval at min_distance_beep to max_beep_interval at maximum_distance_detection
-        interval = min_beep_interval + ((distance - min_distance_beep) / 
-                   (maximum_distance_detection - min_distance_beep)) * (max_beep_interval - min_beep_interval)
-        return min(max_beep_interval, interval)  # Ensure we don't go above maximum interval
-    
-    # Function to play sound with binaural effect for regular objects
-    def play_binaural_sound(sound_type, quadrant, left_vol, right_vol):
-        # Apply master volume
-        left_vol *= audio_volume
-        right_vol *= audio_volume
-        
-        # Select appropriate frequency
-        if sound_type == 'person':
-            freq = person_beep_freq
-        elif sound_type == 'vehicle':
-            freq = vehicle_beep_freq
-        else:  # fallback to person frequency if unknown type
-            freq = person_beep_freq
-            
-        # Use fixed beep duration
-        beep_duration = fixed_beep_duration
-        
-        # Get or create the sound
-        stereo_beep = get_stereo_sound(freq, beep_duration, left_vol, right_vol)
-        
-        # Play the sound
-        stereo_beep.play(loops=0, fade_ms=5)
-    
-    # Function to update wall humming based on current wall objects
-    def update_wall_humming():
-        global wall_objects
-        
-        # Check if wall humming is enabled
-        if not wall_hum_enabled or len(wall_objects) == 0:
-            # Stop any playing wall hum if no walls detected
-            if wall_hum_channel.get_busy():
-                wall_hum_channel.stop()
-            return
-        
-        # Calculate average position and distance of wall objects
-        total_left_vol = 0
-        total_right_vol = 0
-        count = 0
-        
-        with wall_lock:
-            # Average the stereo volumes from all wall objects
-            for obj_id, obj_data in wall_objects.items():
-                left_vol, right_vol = get_stereo_volume(obj_data['quadrant'])
-                total_left_vol += left_vol
-                total_right_vol += right_vol
-                count += 1
-        
-        if count > 0:
-            # Calculate average stereo volumes
-            avg_left_vol = total_left_vol / count
-            avg_right_vol = total_right_vol / count
-            
-            # Apply master volume and wall hum specific volume
-            final_left_vol = avg_left_vol * audio_volume * wall_hum_volume
-            final_right_vol = avg_right_vol * audio_volume * wall_hum_volume
-            
-            # Create or get the wall hum sound
-            wall_hum_sound = get_stereo_sound(wall_hum_freq, wall_hum_duration, final_left_vol, final_right_vol)
-            
-            # Play or update the wall humming sound
-            if not wall_hum_channel.get_busy():
-                # Start the wall hum if not already playing
-                wall_hum_channel.play(wall_hum_sound, loops=-1, fade_ms=50)  # -1 for infinite looping
-            else:
-                # Queue the next wall hum with updated volumes
-                wall_hum_channel.queue(wall_hum_sound)
-    
-    # Audio feedback thread function
-    def audio_feedback_thread():
-        global tracked_objects, wall_objects
-        
-        while not stop_event.is_set():
-            current_time = time.time()
-            
-            # Make a thread-safe copy of the current objects (non-wall objects only)
-            beeping_objects = {}
-            with tracking_lock:
-                # Filter out wall objects and copy the rest
-                beeping_objects = {obj_id: obj_data for obj_id, obj_data in tracked_objects.items() 
-                                if obj_data['sound_type'] != 'wall'}
-            
-            # Process each tracked object that uses interval-based beeping
-            for obj_id, obj_data in beeping_objects.items():
-                # Check if object is still valid (not too old)
-                if current_time - obj_data['last_seen'] > object_timeout:
-                    continue
-                    
-                # Calculate time since last beep
-                time_since_beep = current_time - obj_data.get('last_beep_time', 0)
-                
-                # Get the desired beep interval based on distance
-                desired_interval = calculate_beep_interval(obj_data['depth'])
-                
-                # If enough time has passed, play a beep
-                if time_since_beep >= desired_interval:
-                    # Get stereo volume ratio based on quadrant
-                    left_vol, right_vol = get_stereo_volume(obj_data['quadrant'])
-                    
-                    # Play the appropriate sound
-                    play_binaural_sound(obj_data['sound_type'], obj_data['quadrant'], left_vol, right_vol)
-                    
-                    # Update last beep time in the global dictionary
-                    with tracking_lock:
-                        if obj_id in tracked_objects:  # Make sure object still exists
-                            tracked_objects[obj_id]['last_beep_time'] = current_time
-            
-            # Update the wall humming sound
-            update_wall_humming()
-            
-            # Sleep a small amount to prevent CPU overuse
-            time.sleep(audio_thread_sleep)
-    
-    # Start audio thread if audio is enabled
-    if audio_enabled:
-        audio_thread = threading.Thread(target=audio_feedback_thread)
-        audio_thread.daemon = True  # Thread will exit when main program exits
-        audio_thread.start()
-        print("Audio feedback thread started")
-    
+    # Process video frames and collect audio data
     while cap.isOpened():
         ret, raw_frame = cap.read()
         if not ret:
             break
         
-        raw_frame = cv2.flip(raw_frame, 1)  # Mirror effect
+        # Get current frame time in seconds
+        current_time = cap.get(cv2.CAP_PROP_POS_FRAMES) / fps
         
-        # Create a copy specifically for YOLO if needed
-        if yolo_width != input_width or yolo_height != input_height:
+        # Resize the input frame to the desired resolution if not using default
+        if input_resolution != 'default' or (original_width != input_width or original_height != input_height):
+            raw_frame = cv2.resize(raw_frame, (input_width, input_height))
+        
+        # Create a copy specifically for YOLO if using different resolution
+        if yolo_resolution != 'default' or (yolo_width != input_width or yolo_height != input_height):
             yolo_frame = cv2.resize(raw_frame, (yolo_width, yolo_height))
         else:
             yolo_frame = raw_frame
@@ -353,10 +176,8 @@ if __name__ == '__main__':
         # Create a mask to track YOLO detections (to avoid duplicate contour detections)
         yolo_mask = np.zeros((raw_frame.shape[0], raw_frame.shape[1]), dtype=np.uint8)
         
-        # Current frame detections
-        current_detections = set()
-        current_wall_objects = {}
-        current_time = time.time()
+        # Find the center of the screen
+        screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
         
         # 1. PRIMARY DETECTOR: Run YOLO segmentation on the YOLO-specific frame
         yolo_detections = []
@@ -376,7 +197,7 @@ if __name__ == '__main__':
                         continue
                         
                     # Scale the bounding box if resolutions differ
-                    if yolo_width != input_width or yolo_height != input_height:
+                    if yolo_resolution != 'default' or (yolo_width != input_width or yolo_height != input_height):
                         x1, y1, x2, y2 = map(int, [box[0] * scale_x, box[1] * scale_y, 
                                                   box[2] * scale_x, box[3] * scale_y])
                     else:
@@ -387,6 +208,9 @@ if __name__ == '__main__':
                     if y1 < y2 and x1 < x2 and binary_mask.sum() > 0:
                         # Resize mask to match the frame dimensions
                         resized_mask = cv2.resize(binary_mask, (raw_frame.shape[1], raw_frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        
+                        # Add this detection to the YOLO mask (to avoid duplicate contour detections)
+                        yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                         
                         # Isolate depth values for the segmented object
                         masked_depth = original_depth.copy()
@@ -400,9 +224,6 @@ if __name__ == '__main__':
                             # Skip objects beyond the maximum detection distance
                             if object_depth > maximum_distance_detection:
                                 continue
-                                
-                            # Add this detection to the YOLO mask (to avoid duplicate contour detections)
-                            yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                             
                             # Save detection details for later visualization
                             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -413,12 +234,11 @@ if __name__ == '__main__':
                             else:
                                 center_x = (x1 + x2) // 2
                                 center_y = (y1 + y2) // 2
-                                
+                            
                             # Determine quadrant for this detection
                             quadrant = get_quadrant(center_x, raw_frame.shape[1])
                             
-                            obj_id = f"yolo_{class_name}_{len(yolo_detections)}"
-                                
+                            # Add to detections for visualization
                             yolo_detections.append({
                                 'type': 'yolo',
                                 'class': class_name,
@@ -427,22 +247,13 @@ if __name__ == '__main__':
                                 'center': (center_x, center_y),
                                 'depth': object_depth,
                                 'color': (0, 255, 0),  # Green for YOLO detections
-                                'quadrant': quadrant,
-                                'id': obj_id
+                                'quadrant': quadrant
                             })
                             
-                            # Add to current frame detections
-                            current_detections.add(obj_id)
-                            
-                            # Update tracked objects for audio thread
-                            with tracking_lock:
-                                tracked_objects[obj_id] = {
-                                    'sound_type': 'person' if class_name == 'person' else 'vehicle',
-                                    'depth': object_depth,
-                                    'quadrant': quadrant,
-                                    'last_seen': current_time,
-                                    'last_beep_time': tracked_objects.get(obj_id, {}).get('last_beep_time', 0)
-                                }
+                            # Store audio data for this detection
+                            if audio_enabled:
+                                sound_type = 'person' if class_name == 'person' else 'vehicle'
+                                audio_data.append((current_time, sound_type, quadrant, object_depth))
         
         # Apply morphological operations to refine the YOLO mask
         kernel = np.ones((5, 5), np.uint8)
@@ -460,15 +271,9 @@ if __name__ == '__main__':
         # Create a new mask that excludes YOLO detections
         exclusive_depth_mask = depth_binary.copy()
         exclusive_depth_mask[yolo_mask_refined > 0] = 0  # Remove areas detected by YOLO
-
-        # Display the exclusive mask for debugging
-        cv2.imshow('Exclusive Depth Mask', exclusive_depth_mask)
                 
         # Find contours in the exclusive mask
         contours, _ = cv2.findContours(exclusive_depth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-        # Find the center of the screen
-        screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
 
         # Process each contour that meets minimum area requirement
         contour_detections = []
@@ -517,8 +322,6 @@ if __name__ == '__main__':
                     # Determine quadrant for this detection
                     quadrant = get_quadrant(center_x, raw_frame.shape[1])
                     
-                    obj_id = f"contour_{i+1}"
-                    
                     contour_detections.append({
                         'type': 'contour',
                         'contour': contour,
@@ -526,48 +329,15 @@ if __name__ == '__main__':
                         'center': (center_x, center_y),
                         'depth': object_depth,
                         'color': (255, 0, 0),  # Blue for contour detections
-                        'id': obj_id,
+                        'id': i+1,
                         'quadrant': quadrant
                     })
                     
-                    # Add to current frame detections
-                    current_detections.add(obj_id)
-                    
-                    # Add to wall objects for continuous humming
-                    current_wall_objects[obj_id] = {
-                        'quadrant': quadrant,
-                        'depth': object_depth,
-                        'last_seen': current_time
-                    }
-                    
-                    # Also add to tracked objects for compatibility
-                    with tracking_lock:
-                        tracked_objects[obj_id] = {
-                            'sound_type': 'wall',
-                            'depth': object_depth,
-                            'quadrant': quadrant,
-                            'last_seen': current_time,
-                            'last_beep_time': current_time  # Not used for walls
-                        }
+                    # Store audio data for this wall/environment detection
+                    if audio_enabled:
+                        audio_data.append((current_time, 'wall', quadrant, object_depth))
         
-        # Update wall objects dictionary with thread safety
-        with wall_lock:
-            # Clear old wall objects
-            wall_objects.clear()
-            # Add current wall objects
-            wall_objects.update(current_wall_objects)
-        
-        # Clean up objects that are no longer detected
-        with tracking_lock:
-            # Find objects that were not detected in this frame
-            objects_to_remove = [obj_id for obj_id in tracked_objects if obj_id not in current_detections]
-            
-            # Remove objects that have not been seen for too long
-            for obj_id in objects_to_remove:
-                if current_time - tracked_objects[obj_id]['last_seen'] > object_timeout:
-                    del tracked_objects[obj_id]
-        
-        # Draw quadrant lines (optional, for visualization)
+        # Optional: Create a quadrant visualization frame
         quadrant_display = output_frame.copy()
         quadrant_width = raw_frame.shape[1] / num_quadrants
         for i in range(1, num_quadrants):
@@ -575,9 +345,6 @@ if __name__ == '__main__':
             cv2.line(quadrant_display, (x_pos, 0), (x_pos, raw_frame.shape[0]), (100, 100, 100), 1)
             cv2.putText(quadrant_display, str(i), (x_pos - 10, 15), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        # Show the quadrant display for debugging
-        cv2.imshow('Quadrants', quadrant_display)
         
         # 3. VISUALIZATION: Draw all detections on the output frame
         
@@ -628,14 +395,10 @@ if __name__ == '__main__':
             cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                         (cx + 5, cy - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            
-        # Display the YOLO and contour masks for debugging
-        cv2.imshow('YOLO Mask', yolo_mask_refined * 255)
-        cv2.imshow('Depth Binary Mask', depth_binary)
         
-        # Display the output
+        # Write frame to output video
         if args.pred_only:
-            cv2.imshow('Depth Only', depth_display)
+            out.write(depth_display)
         else:
             # Ensure both frames have the same dimensions for concatenation
             h1, w1 = output_frame.shape[:2]
@@ -643,17 +406,129 @@ if __name__ == '__main__':
             if h1 != h2 or w1 != w2:
                 depth_display = cv2.resize(depth_display, (w1, h1))
             combined_display = cv2.hconcat([output_frame, depth_display])
-            cv2.imshow('Dual Detection System - YOLO + Contour', combined_display)
+            out.write(combined_display)
         
-        # Exit loop on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Update progress bar
+        pbar.update(1)
 
     # Clean up
-    if audio_enabled:
-        stop_event.set()  # Signal audio thread to stop
-        audio_thread.join(timeout=1.0)  # Wait for thread to finish
-        pygame.mixer.quit()
-        
+    pbar.close()
     cap.release()
-    cv2.destroyAllWindows()
+    out.release()
+    
+    # Generate audio file if audio is enabled
+    if audio_enabled:
+        print("Generating audio file...")
+        audio_output_path = os.path.join('output', 'audio_output.wav')
+        
+        # Helper functions for audio generation
+        def generate_sine_wave(freq, duration, volume=1.0):
+            num_samples = int(sample_rate * duration)
+            t = np.linspace(0, duration, num_samples, False)
+            wave = np.sin(2 * np.pi * freq * t) * volume
+            # Apply fade in/out to avoid clicks
+            fade_samples = int(0.005 * sample_rate)  # 5ms fade
+            if num_samples > 2 * fade_samples:
+                fade_in = np.linspace(0, 1, fade_samples)
+                fade_out = np.linspace(1, 0, fade_samples)
+                wave[:fade_samples] *= fade_in
+                wave[-fade_samples:] *= fade_out
+            return wave
+        
+        # Function to calculate stereo volumes based on quadrant
+        def get_stereo_volume(quadrant):
+            left_volume = (num_quadrants - quadrant) / (num_quadrants - 1)
+            right_volume = (quadrant - 1) / (num_quadrants - 1)
+            return left_volume, right_volume
+        
+        # Function to calculate beep interval based on distance
+        def calculate_beep_interval(distance):
+            if distance <= min_distance_beep:
+                return min_beep_interval
+            interval = min_beep_interval + ((distance - min_distance_beep) / 
+                    (maximum_distance_detection - min_distance_beep)) * (max_beep_interval - min_beep_interval)
+            return min(max_beep_interval, interval)
+        
+        # Create WAV file
+        with wave.open(audio_output_path, 'w') as wav_file:
+            wav_file.setnchannels(2)  # Stereo
+            wav_file.setsampwidth(2)  # 2 bytes = 16 bits
+            wav_file.setframerate(sample_rate)
+            
+            # Prepare audio data buffers
+            audio_buffer = np.zeros((int(duration * sample_rate), 2), dtype=np.float32)
+            
+            # Process each detected audio event
+            for timestamp, sound_type, quadrant, distance in audio_data:
+                # Calculate stereo volumes
+                left_vol, right_vol = get_stereo_volume(quadrant)
+                left_vol *= audio_volume
+                right_vol *= audio_volume
+                
+                # Get frequency based on sound type
+                if sound_type == 'person':
+                    freq = person_beep_freq
+                    beep_duration = fixed_beep_duration
+                    beep_interval = calculate_beep_interval(distance)
+                    
+                    # Calculate time range for this detection's beeps
+                    start_time = timestamp
+                    if timestamp + beep_interval < duration:
+                        end_time = timestamp + beep_interval
+                    else:
+                        end_time = timestamp + beep_duration
+                    
+                    # Generate beep at this time
+                    start_sample = int(start_time * sample_rate)
+                    beep_samples = int(beep_duration * sample_rate)
+                    if start_sample + beep_samples <= len(audio_buffer):
+                        beep = generate_sine_wave(freq, beep_duration)
+                        # Apply stereo volume
+                        beep_stereo = np.column_stack((beep * left_vol, beep * right_vol))
+                        end_sample = min(start_sample + len(beep_stereo), len(audio_buffer))
+                        audio_buffer[start_sample:end_sample] += beep_stereo[:end_sample-start_sample]
+                
+                elif sound_type == 'vehicle':
+                    freq = vehicle_beep_freq
+                    beep_duration = fixed_beep_duration
+                    beep_interval = calculate_beep_interval(distance)
+                    
+                    # Calculate time range for this detection's beeps
+                    start_time = timestamp
+                    if timestamp + beep_interval < duration:
+                        end_time = timestamp + beep_interval
+                    else:
+                        end_time = timestamp + beep_duration
+                    
+                    # Generate beep at this time
+                    start_sample = int(start_time * sample_rate)
+                    beep_samples = int(beep_duration * sample_rate)
+                    if start_sample + beep_samples <= len(audio_buffer):
+                        beep = generate_sine_wave(freq, beep_duration)
+                        # Apply stereo volume
+                        beep_stereo = np.column_stack((beep * left_vol, beep * right_vol))
+                        end_sample = min(start_sample + len(beep_stereo), len(audio_buffer))
+                        audio_buffer[start_sample:end_sample] += beep_stereo[:end_sample-start_sample]
+                
+                elif sound_type == 'wall':
+                    freq = wall_hum_freq
+                    hum_duration = 0.5  # Wall humming duration
+                    
+                    # Generate hum at this time
+                    start_sample = int(timestamp * sample_rate)
+                    hum_samples = int(hum_duration * sample_rate)
+                    if start_sample + hum_samples <= len(audio_buffer):
+                        hum = generate_sine_wave(freq, hum_duration)
+                        # Apply stereo volume
+                        hum_stereo = np.column_stack((hum * left_vol, hum * right_vol))
+                        end_sample = min(start_sample + len(hum_stereo), len(audio_buffer))
+                        audio_buffer[start_sample:end_sample] += hum_stereo[:end_sample-start_sample]
+            
+            # Normalize audio to prevent clipping
+            max_val = np.max(np.abs(audio_buffer))
+            if max_val > 0:
+                audio_buffer = audio_buffer / max_val * 0.9  # Scale to 90% of max amplitude
+            
+            # Convert to 16-bit PCM and write to WAV file
+            audio_int16 = (audio_buffer * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
