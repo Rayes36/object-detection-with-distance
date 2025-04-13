@@ -39,8 +39,9 @@ if __name__ == '__main__':
     input_resolution = 'default'  # Input resolution for webcam capture width x height, can be set to "default" for original resolution
     # input_resolution = 1920x1080
 
-    # Classes to detect
-    valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
+    # Classes configs
+    valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']  # classes to detect
+    max_people_detection = 2    # Maximum number of people to detect at once
 
     # Define quadrants for vertical segments. ex: 20 quadrants, each quadrant occupy 5% of screen width
     num_quadrants = 20
@@ -140,6 +141,13 @@ if __name__ == '__main__':
         # 1. PRIMARY DETECTOR: Run YOLO segmentation on the YOLO-specific frame
         yolo_detections = []
         results = yolo_model(yolo_frame)
+        
+        # Keep track of person detections
+        person_count = 0
+        
+        # Collect all potential detections first
+        all_potential_detections = []
+        
         for result in results:
             if hasattr(result, 'masks') and result.masks is not None:
                 for box, cls, mask in zip(
@@ -153,7 +161,7 @@ if __name__ == '__main__':
                     # Skip if not in our valid_classes list
                     if class_name not in valid_classes:
                         continue
-                        
+                    
                     # Scale the bounding box if resolutions differ
                     if yolo_width != input_width or yolo_height != input_height:
                         x1, y1, x2, y2 = map(int, [box[0] * scale_x, box[1] * scale_y, 
@@ -179,11 +187,8 @@ if __name__ == '__main__':
                             # Skip objects beyond the maximum detection distance
                             if object_depth > maximum_distance_detection:
                                 continue
-                                
-                            # Add this detection to the YOLO mask (to avoid duplicate contour detections)
-                            yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                             
-                            # Save detection details for later visualization
+                            # Find contours and calculate center
                             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                             moments = cv2.moments(resized_mask)
                             if moments["m00"] != 0:
@@ -195,8 +200,9 @@ if __name__ == '__main__':
                                 
                             # Determine quadrant for this detection
                             quadrant = get_quadrant(center_x, raw_frame.shape[1])
-                                
-                            yolo_detections.append({
+                            
+                            # Add to potential detections list
+                            all_potential_detections.append({
                                 'type': 'yolo',
                                 'class': class_name,
                                 'contours': contours,
@@ -204,8 +210,29 @@ if __name__ == '__main__':
                                 'center': (center_x, center_y),
                                 'depth': object_depth,
                                 'color': (0, 255, 0),  # Green for YOLO detections
-                                'quadrant': quadrant
+                                'quadrant': quadrant,
+                                'mask': resized_mask
                             })
+        
+        # Sort all potential detections by depth (nearest first)
+        all_potential_detections.sort(key=lambda d: d['depth'])
+
+        # Process detections with people limit
+        yolo_detections = []
+        person_count = 0
+
+        for detection in all_potential_detections:
+            # Check if we've reached the limit for person detections
+            if detection['class'] == 'person':
+                if person_count >= max_people_detection:
+                    continue
+                person_count += 1
+
+            # Add this detection to the YOLO mask
+            yolo_mask = cv2.bitwise_or(yolo_mask, detection['mask'])
+
+            # Add to final detections list
+            yolo_detections.append(detection)
         
         # Apply morphological operations to refine the YOLO mask
         kernel = np.ones((5, 5), np.uint8)
