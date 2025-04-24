@@ -78,9 +78,7 @@ def generate_audio_file(detection_events, sound_config, duration, output_file):
         duration_samples = int(duration_s * sample_rate)
         beep = generate_beep(frequency, duration_samples, sample_rate)
 
-        volume = max_volume
-        if distance > 5.0:
-            volume = max(0.0, max_volume * (1.0 - (distance - 5.0) / 5.0))
+        volume = max_volume * max(0.0, (maximum_distance_detection - distance) / maximum_distance_detection)
 
         if volume < 0.05:
             continue
@@ -124,10 +122,10 @@ if __name__ == '__main__':
     encoder = 'vits'
     dataset = 'vkitti'
     max_depth = 80
-    depth_threshold = 5.0 # threshold untuk countour
+    depth_threshold = 8 # threshold untuk countour
     min_area = 5000
     yolo_resolution = 'default'
-    maximum_distance_detection = 20 # maximum utk yolo
+    maximum_distance_detection = 15 # maximum utk yolo
     depth_input_size = 336
     input_resolution = 'default'
     
@@ -145,7 +143,7 @@ if __name__ == '__main__':
     }
 
     valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
-    max_people_detection = 2 # max deteksi orang
+    max_people_detection = 3 # max deteksi orang
 
     input_file = os.path.join('input', 'video.mp4')
     output_video = os.path.join('output', 'processed_output.mp4')
