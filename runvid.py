@@ -42,7 +42,7 @@ def collect_detection_events(detections, frame_width, timestamp, detection_event
             sound_type = 'person' if det['class'] == 'person' else 'vehicle'
             quadrant = get_quadrant(det['center'][0], frame_width)
             detection_events.append((timestamp, sound_type, quadrant, det['depth']))
-        elif det['type'] == 'contour':
+        elif det['type'] == 'contour' or det['type'] == 'secondary':
             sound_type = 'wall'
             quadrant = get_quadrant(det['center'][0], frame_width)
             detection_events.append((timestamp, sound_type, quadrant, det['depth']))
@@ -64,11 +64,11 @@ def generate_audio_file(detection_events, sound_config, duration, output_file):
             max_volume = sound_config['other_beep_max_volume']
             duration_s = sound_config['beep_duration_s']
             interval_s = sound_config['other_beep_interval_s']
-        else:  # wall
+        else:
             frequency = sound_config['hum_frequency']
             max_volume = sound_config['hum_max_volume']
             duration_s = sound_config['beep_duration_s']
-            interval_s = 0  # No interval for wall hum
+            interval_s = 0
 
         if timestamp - last_beep_time.get(sound_type, -float('inf')) < interval_s:
             continue
@@ -78,7 +78,10 @@ def generate_audio_file(detection_events, sound_config, duration, output_file):
         duration_samples = int(duration_s * sample_rate)
         beep = generate_beep(frequency, duration_samples, sample_rate)
 
-        volume = max_volume * max(0.0, (maximum_distance_detection - distance) / maximum_distance_detection)
+        if sound_type in ['person', 'vehicle']:
+            volume = max_volume * max(0.0, (maximum_distance_detection_primary - distance) / maximum_distance_detection_primary)
+        else:
+            volume = max_volume * max(0.0, (maximum_distance_detection_primary - distance) / maximum_distance_detection_primary)
 
         if volume < 0.05:
             continue
@@ -122,10 +125,11 @@ if __name__ == '__main__':
     encoder = 'vits'
     dataset = 'vkitti'
     max_depth = 80
-    depth_threshold = 8 # threshold untuk countour
+    depth_threshold = 5 # threshold untuk countour
     min_area = 5000
     yolo_resolution = 'default'
-    maximum_distance_detection = 15 # maximum utk yolo
+    maximum_distance_detection_primary = 15 # maximum utk primary classes
+    maximum_distance_detection_secondary = 10 # maximum utk secondary classes
     depth_input_size = 336
     input_resolution = 'default'
     
@@ -142,7 +146,10 @@ if __name__ == '__main__':
         'beep_duration_s': 0.2,
     }
 
-    valid_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
+    primary_classes = ['person', 'bicycle', 'motorcycle', 'truck', 'car', 'bus']
+    secondary_classes = ['fire hydrant', 'bench']
+    # Custom model classes (all these will be treated as secondary classes)
+    custom_model_classes = ['bollard', 'electrical box', 'roadblock', 'traffic cone', 'trash can']
     max_people_detection = 3 # max deteksi orang
 
     input_file = os.path.join('input', 'video.mp4')
@@ -184,6 +191,8 @@ if __name__ == '__main__':
     depth_model.eval()
     
     yolo_model = YOLO("yolo11n-seg.pt")
+    
+    custom_model = YOLO("my_model.pt")
     
     cmap = matplotlib.colormaps.get_cmap('Spectral_r')
 
@@ -231,6 +240,7 @@ if __name__ == '__main__':
         all_detections = []
         all_potential_detections = []
 
+        # Process detections from main YOLO model
         results = yolo_model(yolo_frame)
         for result in results:
             if hasattr(result, 'masks') and result.masks is not None:
@@ -241,9 +251,13 @@ if __name__ == '__main__':
                 ):
                     class_name = yolo_model.names[int(cls)]
                     
-                    if class_name not in valid_classes:
+                    # Process both primary and secondary classes
+                    is_primary = class_name in primary_classes
+                    is_secondary = class_name in secondary_classes
+                    
+                    if not (is_primary or is_secondary):
                         continue
-                        
+                    
                     if yolo_width != input_width or yolo_height != input_height:
                         x1, y1, x2, y2 = map(int, [box[0] * scale_x, box[1] * scale_y, 
                                                   box[2] * scale_x, box[3] * scale_y])
@@ -261,28 +275,137 @@ if __name__ == '__main__':
                         if len(valid_depth_values) > 0:
                             object_depth = np.nanmedian(valid_depth_values)
                             
-                            if object_depth > maximum_distance_detection:
+                            # Apply appropriate distance threshold based on class type
+                            max_distance = maximum_distance_detection_primary if is_primary else maximum_distance_detection_secondary
+                            
+                            if object_depth > max_distance:
                                 continue
                                 
                             yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
                             
                             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                            moments = cv2.moments(resized_mask)
-                            if moments["m00"] != 0:
-                                center_x = int(moments["m10"] / moments["m00"])
-                                center_y = int(moments["m01"] / moments["m00"])
+                            # For primary classes - use the centroid of the mask
+                            if is_primary:
+                                moments = cv2.moments(resized_mask)
+                                if moments["m00"] != 0:
+                                    center_x = int(moments["m10"] / moments["m00"])
+                                    center_y = int(moments["m01"] / moments["m00"])
+                                else:
+                                    center_x = (x1 + x2) // 2
+                                    center_y = (y1 + y2) // 2
+                            # For secondary classes - use the contour center point logic with screen center
                             else:
-                                center_x = (x1 + x2) // 2
-                                center_y = (y1 + y2) // 2
+                                screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
+                                contour = contours[0] if contours else None
+                                
+                                if contour is not None:
+                                    center_inside_contour = cv2.pointPolygonTest(contour, screen_center, False) >= 0
+                                    
+                                    if center_inside_contour:
+                                        center_x, center_y = screen_center
+                                    else:
+                                        min_distance = float('inf')
+                                        closest_point = None
+                                        contour_points = contour.reshape(-1, 2)
+                                        
+                                        for point in contour_points:
+                                            dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
+                                            if dist < min_distance:
+                                                min_distance = dist
+                                                closest_point = point
+                                        
+                                        center_x, center_y = closest_point if closest_point is not None else screen_center
+                                else:
+                                    # Fallback if no contour is found
+                                    center_x = (x1 + x2) // 2
+                                    center_y = (y1 + y2) // 2
                                 
                             detection_info = {
-                                'type': 'yolo',
+                                'type': 'secondary' if is_secondary else 'yolo',
                                 'class': class_name,
                                 'contours': contours,
                                 'bbox': (x1, y1, x2, y2),
                                 'center': (center_x, center_y),
                                 'depth': object_depth,
-                                'color': (0, 255, 0),
+                                'color': (255, 0, 0) if is_secondary else (0, 255, 0),
+                                'quadrant': get_quadrant(center_x, raw_frame.shape[1])
+                            }
+                            all_potential_detections.append(detection_info)
+        
+        # Process detections from custom YOLO model - treating it the same as main YOLO model
+        custom_results = custom_model(yolo_frame)
+        for custom_result in custom_results:
+            if hasattr(custom_result, 'masks') and custom_result.masks is not None:
+                for box, cls, mask in zip(
+                    custom_result.boxes.xyxy.cpu().numpy(), 
+                    custom_result.boxes.cls.cpu().numpy(),
+                    custom_result.masks.data.cpu().numpy()
+                ):
+                    class_name = custom_model.names[int(cls)]
+                    
+                    # All custom model detections are treated as secondary classes
+                    is_primary = False
+                    is_secondary = True
+                    
+                    if yolo_width != input_width or yolo_height != input_height:
+                        x1, y1, x2, y2 = map(int, [box[0] * scale_x, box[1] * scale_y, 
+                                                  box[2] * scale_x, box[3] * scale_y])
+                    else:
+                        x1, y1, x2, y2 = map(int, box)
+                    
+                    binary_mask = (mask > 0.5).astype(np.uint8)
+                    if y1 < y2 and x1 < x2 and binary_mask.sum() > 0:
+                        resized_mask = cv2.resize(binary_mask, (raw_frame.shape[1], raw_frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        
+                        masked_depth = original_depth.copy()
+                        masked_depth[resized_mask == 0] = np.nan
+                        valid_depth_values = masked_depth[~np.isnan(masked_depth)]
+                        
+                        if len(valid_depth_values) > 0:
+                            object_depth = np.nanmedian(valid_depth_values)
+                            
+                            # Apply secondary distance threshold
+                            if object_depth > maximum_distance_detection_secondary:
+                                continue
+                                
+                            yolo_mask = cv2.bitwise_or(yolo_mask, resized_mask)
+                            
+                            contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            
+                            # For custom model secondary detections - use the contour center point logic with screen center
+                            screen_center = (raw_frame.shape[1] // 2, raw_frame.shape[0] // 2)
+                            contour = contours[0] if contours else None
+                            
+                            if contour is not None:
+                                center_inside_contour = cv2.pointPolygonTest(contour, screen_center, False) >= 0
+                                
+                                if center_inside_contour:
+                                    center_x, center_y = screen_center
+                                else:
+                                    min_distance = float('inf')
+                                    closest_point = None
+                                    contour_points = contour.reshape(-1, 2)
+                                    
+                                    for point in contour_points:
+                                        dist = np.sqrt((point[0] - screen_center[0])**2 + (point[1] - screen_center[1])**2)
+                                        if dist < min_distance:
+                                            min_distance = dist
+                                            closest_point = point
+                                    
+                                    center_x, center_y = closest_point if closest_point is not None else screen_center
+                            else:
+                                # Fallback if no contour is found
+                                center_x = (x1 + x2) // 2
+                                center_y = (y1 + y2) // 2
+                            
+                            detection_info = {
+                                'type': 'secondary',
+                                'class': class_name,
+                                'contours': contours,
+                                'bbox': (x1, y1, x2, y2),
+                                'center': (center_x, center_y),
+                                'depth': object_depth,
+                                'color': (255, 0, 0),  # Blue for secondary objects
                                 'quadrant': get_quadrant(center_x, raw_frame.shape[1])
                             }
                             all_potential_detections.append(detection_info)
@@ -359,28 +482,45 @@ if __name__ == '__main__':
         collect_detection_events(all_detections, input_width, timestamp, detection_events)
         
         for detection in all_detections:
-            if detection['type'] == 'contour':
+            if detection['type'] == 'contour' or detection['type'] == 'secondary':
+                # Blue color for contours and secondary objects
+                detection_color = (255, 0, 0)
+                
                 overlay = output_frame.copy()
-                cv2.drawContours(overlay, [detection['contour']], 0, detection['color'], -1)
+                
+                if detection['type'] == 'contour':
+                    cv2.drawContours(overlay, [detection['contour']], 0, detection_color, -1)
+                else:  # secondary
+                    cv2.drawContours(overlay, detection['contours'], -1, detection_color, -1)
+                
                 cv2.addWeighted(overlay, 0.4, output_frame, 0.6, 0, output_frame)
                 
-                cv2.drawContours(output_frame, [detection['contour']], 0, detection['color'], 2)
-                x1, y1, x2, y2 = detection['bbox']
-                cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection['color'], 2)
+                if detection['type'] == 'contour':
+                    cv2.drawContours(output_frame, [detection['contour']], 0, detection_color, 2)
+                    x1, y1, x2, y2 = detection['bbox']
+                    cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection_color, 2)
+                    label = f"Object {detection['id']}"
+                else:  # secondary
+                    cv2.drawContours(output_frame, detection['contours'], -1, detection_color, 2)
+                    x1, y1, x2, y2 = detection['bbox']
+                    cv2.rectangle(output_frame, (x1, y1), (x2, y2), detection_color, 2)
+                    label = detection['class']
                 
                 cx, cy = detection['center']
                 q_num = detection['quadrant']
                 cv2.circle(output_frame, (cx, cy), 5, (0, 0, 255), -1)
                 cv2.circle(depth_display, (cx, cy), 5, (0, 0, 255), -1)
-                cv2.putText(output_frame, f"Object {detection['id']} (Q{q_num})", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection['color'], 2)
+                cv2.putText(output_frame, f"{label} (Q{q_num})", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, detection_color, 2)
                 cv2.putText(output_frame, f"Distance: {detection['depth']:.2f} m", 
                             (cx + 5, cy - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             elif detection['type'] == 'yolo':
+                # Green color for primary objects (person)
                 if detection['class'] == 'person':
                     detection_color = (0, 255, 0)
                 else:
+                    # Purple color for other primary objects (vehicles)
                     detection_color = (128, 0, 128)
 
                 overlay = output_frame.copy()
