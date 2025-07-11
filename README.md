@@ -51,3 +51,6 @@ after that change this part of the code depending on the selected model
 
 ## Poster
 ![Image description](https://raw.githubusercontent.com/Rayes36/object-detection-with-distance/audio-branch/obstacle-detection-ai-research-poster/1.png)
+
+## Learn more
+[![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
