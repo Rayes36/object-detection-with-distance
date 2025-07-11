@@ -2,7 +2,6 @@
 A real-time multi-modal perception system that combines computer vision and spatial audio to provide environmental awareness for visually impaired individuals navigating Indonesian roads.
 
 [![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
-[![Paper](https://img.shields.io/badge/Paper-ResearchGate-00CCBB?style=for-the-badge&logo=researchgate&logoColor=white)](https://www.researchgate.net/profile/Immanuel-Yabes/publication/376637850_Classifying_and_Predicting_The_Rating_Sentiment_of_Women%27s_E-commerce_Clothing_Reviews_A_Comparative_Study_Using_SVM_ANN_and_BERT_Models/links/6698d8d1cb7fbf12a459ded6/Classifying-and-Predicting-The-Rating-Sentiment-of-Womens-E-commerce-Clothing-Reviews-A-Comparative-Study-Using-SVM-ANN-and-BERT-Models.pdf)
 
 ## Brief Overview
 This project implements an intelligent assistive navigation system that transforms visual information into intuitive spatial audio feedback. By mounting a smartphone and wearing headphones, users receive real-time audio cues about obstacles, people, and vehicles in their environment.
