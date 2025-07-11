@@ -14,9 +14,12 @@ This project implements an intelligent assistive navigation system that transfor
 ## Running the System
 ### 1. Change the directory to the downloaded files
 ```
-cd D:\file-path\object-detection-with-distance-audio-branch
+    cd D:\file-path\object-detection-with-distance-audio-branch
 ```
 ### 2. Download Dependencies
+```
+    pip install -r requirements.txt
+```
 ### 3. Run the program
 There are 3 files that can be run:
 1. run.py will run the program with additional windows to monitor the system
@@ -25,7 +28,7 @@ There are 3 files that can be run:
 
 running the program
 ```
-python run.py
+    python run.py
 ```
 
 ### Changing the Depth Analysis Model
