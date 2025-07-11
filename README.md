@@ -9,4 +9,4 @@ isi checkpoints:
 
 
 ## Poster
-![Image description](https://raw.githubusercontent.com/Rayes36/object-detection-with-distance/4d5dfcfda9f897d4229f91c534761d0212538f6f/obstacle-detection-ai-research-poster/1.png)
+![Image description](https://raw.githubusercontent.com/Rayes36/object-detection-with-distance/audio-branch/obstacle-detection-ai-research-poster/1.png)
