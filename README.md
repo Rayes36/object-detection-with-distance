@@ -16,11 +16,11 @@ This project implements an intelligent assistive navigation system that transfor
 ## Running the System
 ### 1. Change the directory to the downloaded files
 ```
-    cd D:\file-path\object-detection-with-distance-audio-branch
+cd D:\file-path\object-detection-with-distance-audio-branch
 ```
 ### 2. Download Dependencies
 ```
-    pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 ### 3. Run the program
 There are 3 files that can be run:
@@ -30,7 +30,7 @@ There are 3 files that can be run:
 
 running the program
 ```
-    python run.py
+python run.py
 ```
 
 ### Changing the Depth Analysis Model
@@ -43,9 +43,9 @@ To change the model used by the depth analysis model, simply replace the .pth in
 
 after that change this part of the code depending on the selected model
 ```
-    encoder = 'vits'            # 'vits' (small), 'vitb' (base), vitl (large)
-    dataset = 'vkitti'          # 'hypersim' for indoor model, 'vkitti' for outdoor model
-    max_depth = 80              # 20 for indoor model, 80 for outdoor model
+encoder = 'vits'            # 'vits' (small), 'vitb' (base), vitl (large)
+dataset = 'vkitti'          # 'hypersim' for indoor model, 'vkitti' for outdoor model
+max_depth = 80              # 20 for indoor model, 80 for outdoor model
 ```
 
 ## Demonstration Video
