@@ -1,5 +1,6 @@
-# Obstacle Detection for the Visually Impaired Using Deep Learning and Audio Cues [![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
+# Obstacle Detection for the Visually Impaired Using Deep Learning and Audio Cues
 A real-time multi-modal perception system that combines computer vision and spatial audio to provide environmental awareness for visually impaired individuals navigating Indonesian roads.
+[![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
 
 ## Brief Overview
 This project implements an intelligent assistive navigation system that transforms visual information into intuitive spatial audio feedback. By mounting a smartphone and wearing headphones, users receive real-time audio cues about obstacles, people, and vehicles in their environment.
