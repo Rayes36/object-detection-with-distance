@@ -12,9 +12,9 @@ This project implements an intelligent assistive navigation system that transfor
 - Audio Processing: Stereo panning with volume-based proximity feedback
 
 ## Running the System
-# 1. Change the directory to the downloaded files
-# 2. Download Dependencies
-# 3. Run the program
+### 1. Change the directory to the downloaded files
+### 2. Download Dependencies
+### 3. Run the program
 There are 3 files that can be run:
 1. run.py will run the program with
 2. runsys.py will run the program without any additional windows and only outputs the feedback sound
@@ -35,8 +35,9 @@ To change the model used for the depth analysis model, simply replace the .pth i
 
 after that change this part of the code depending on the selected model
 ```
-    encoder = 'vits'
-    dataset = 'vkitti'
+    encoder = 'vits'            # 'vits' (small), 'vitb' (base), vitl (large)
+    dataset = 'vkitti'          # 'hypersim' for indoor model, 'vkitti' for outdoor model
+    max_depth = 80              # 20 for indoor model, 80 for outdoor model
 ```
 
 ## Demonstration Video
