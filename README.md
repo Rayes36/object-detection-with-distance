@@ -1,3 +1,6 @@
+## Demonstration Video
+[![DemonstrationVideo](https://img.youtube.com/vi/njkRDEua8Kk/hqdefault.jpg)](https://youtu.be/njkRDEua8Kk)
+
 repository yang digunakan untuk menyimpan files dari project object detection with distance
 
 isi checkpoints:
