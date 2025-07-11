@@ -1,5 +1,6 @@
 # Obstacle Detection for the Visually Impaired Using Deep Learning and Audio Cues
 A real-time multi-modal perception system that combines computer vision and spatial audio to provide environmental awareness for visually impaired individuals navigating Indonesian roads.
+
 [![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
 
 ## Brief Overview
