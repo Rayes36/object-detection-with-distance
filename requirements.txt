@@ -3,3 +3,6 @@ opencv-python
 open3d
 torch
 torchvision
+numpy
+ultralytics
+pygame
