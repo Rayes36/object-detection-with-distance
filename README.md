@@ -13,10 +13,13 @@ This project implements an intelligent assistive navigation system that transfor
 
 ## Running the System
 ### 1. Change the directory to the downloaded files
+```
+cd D:\file-path\object-detection-with-distance-audio-branch
+```
 ### 2. Download Dependencies
 ### 3. Run the program
 There are 3 files that can be run:
-1. run.py will run the program with
+1. run.py will run the program with additional windows to monitor the system
 2. runsys.py will run the program without any additional windows and only outputs the feedback sound
 3. runvid.py will process a video inside the "input" folder and outputs the processed video to the "output" folder
 
