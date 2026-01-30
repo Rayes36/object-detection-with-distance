@@ -2,6 +2,7 @@
 A real-time multi-modal perception system that combines computer vision and spatial audio to provide environmental awareness for visually impaired individuals navigating Indonesian roads.
 
 [![Linktree](https://img.shields.io/badge/Linktree-39E09B?style=for-the-badge&logo=linktree&logoColor=white)](https://linktr.ee/obstacle_detection_ai)
+[![Paper](https://img.shields.io/badge/IEEE_Paper-39E09B?style=for-the-badge&logo=ieee&logoColor=white)](https://ieeexplore.ieee.org/document/11332484)
 
 ## Brief Overview
 This project implements an intelligent assistive navigation system that transforms visual information into intuitive spatial audio feedback. By mounting a smartphone and wearing headphones, users receive real-time audio cues about obstacles, people, and vehicles in their environment.
